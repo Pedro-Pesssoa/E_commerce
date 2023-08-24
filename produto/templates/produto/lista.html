@@ -25,12 +25,12 @@
                            {{ produto.preco_marketing_promo | formata_preco }}
                         </span>
                         <span class="product-old-price text-muted">
-                            {{ produto.preco_marketing}}
+                            {{ produto.preco_marketing | formata_preco}}
                         </span>
 
                         {% else %}
                         <span class="product-price">
-                            {{ produto.preco_marketing }}
+                            {{ produto.preco_marketing | formata_preco }}
                          </span>
 
                         {% endif %}

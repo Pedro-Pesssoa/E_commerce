@@ -6,7 +6,7 @@ from django.http import HttpResponse
 class Pagar(View):
     pass
     
-class FecharPedido(View):
+class SalvarPedido(View):
     pass
 
 class Detalhes(View):

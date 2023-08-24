@@ -1,203 +1,187 @@
-from django.shortcuts import render, redirect, reverse, get_object_or_404
-from django.views.generic.list import ListView
-from django.views.generic.detail import DetailView
+# Usário não logadofrom django.contrib import messages
+from django.shortcuts import render, get_object_or_404, redirect
+from django.views.generic import ListView
 from django.views import View
 from django.http import HttpResponse
-from django.contrib import messages
-from django.db.models import Q
+from django.contrib.auth.models import User
+from django.contrib.auth import authenticate, login, logout
+import copy
 
 from . import models
-from perfil.models import Perfil
+from . import forms
 
 
-class ListaProdutos(ListView):
-    model = models.Produto
-    template_name = 'produto/lista.html'
-    context_object_name = 'produtos'
-    paginate_by = 10
-    ordering = ['-id']
+class BasePerfil(View):
+    template_name = 'perfil/criar.html'
 
+    def setup(self, *args, **kwargs):
+        super().setup(*args, **kwargs)
 
-class Busca(ListaProdutos):
-    def get_queryset(self, *args, **kwargs):
-        termo = self.request.GET.get('termo') or self.request.session['termo']
-        qs = super().get_queryset(*args, **kwargs)
+        self.carrinho = copy.deepcopy(self.request.session.get('carrinho', {}))
 
-        if not termo:
-            return qs
+        self.perfil = None
 
-        self.request.session['termo'] = termo
+        if self.request.user.is_authenticated:
+            self.perfil = models.Perfil.objects.filter(
+                usuario=self.request.user
+            ).first()
 
-        qs = qs.filter(
-            Q(nome__icontains=termo) |
-            Q(descricao_curta__icontains=termo) |
-            Q(descricao_longa__icontains=termo)
-        )
-
-        self.request.session.save()
-        return qs
-
-
-class DetalheProduto(DetailView):
-    model = models.Produto
-    template_name = 'produto/detalhe.html'
-    context_object_name = 'produto'
-    slug_url_kwarg = 'slug'
-
-
-class AdicionarAoCarrinho(View):
-    def get(self, *args, **kwargs):
-        http_referer = self.request.META.get(
-            'HTTP_REFERER',
-            reverse('produto:lista')
-        )
-        variacao_id = self.request.GET.get('vid')
-
-        if not variacao_id:
-            messages.error(
-                self.request,
-                'Produto não existe'
-            )
-            return redirect(http_referer)
-
-        variacao = get_object_or_404(models.Variacao, id=variacao_id)
-        variacao_estoque = variacao.estoque
-        produto = variacao.produto
-
-        produto_id = produto.id
-        produto_nome = produto.nome
-        variacao_nome = variacao.nome or ''
-        preco_unitario = variacao.preco
-        preco_unitario_promocional = variacao.preco_promocional
-        quantidade = 1
-        slug = produto.slug
-        imagem = produto.imagem
-
-        if imagem:
-            imagem = imagem.name
-        else:
-            imagem = ''
-
-        if variacao.estoque < 1:
-            messages.error(
-                self.request,
-                'Estoque insuficiente'
-            )
-            return redirect(http_referer)
-
-        if not self.request.session.get('carrinho'):
-            self.request.session['carrinho'] = {}
-            self.request.session.save()
-
-        carrinho = self.request.session['carrinho']
-
-        if variacao_id in carrinho:
-            quantidade_carrinho = carrinho[variacao_id]['quantidade']
-            quantidade_carrinho += 1
-
-            if variacao_estoque < quantidade_carrinho:
-                messages.warning(
-                    self.request,
-                    f'Estoque insuficiente para {quantidade_carrinho}x no '
-                    f'produto "{produto_nome}". Adicionamos {variacao_estoque}x '
-                    f'no seu carrinho.'
+            self.contexto = {
+                'userform': forms.UserForm(
+                    data=self.request.POST or None,
+                    usuario=self.request.user,
+                    instance=self.request.user,
+                ),
+                'perfilform': forms.PerfilForm(
+                    data=self.request.POST or None,
+                    instance=self.perfil
                 )
-                quantidade_carrinho = variacao_estoque
-
-            carrinho[variacao_id]['quantidade'] = quantidade_carrinho
-            carrinho[variacao_id]['preco_quantitativo'] = preco_unitario * \
-                quantidade_carrinho
-            carrinho[variacao_id]['preco_quantitativo_promocional'] = preco_unitario_promocional * \
-                quantidade_carrinho
+            }
         else:
-            carrinho[variacao_id] = {
-                'produto_id': produto_id,
-                'produto_nome': produto_nome,
-                'variacao_nome': variacao_nome,
-                'variacao_id': variacao_id,
-                'preco_unitario': preco_unitario,
-                'preco_unitario_promocional': preco_unitario_promocional,
-                'preco_quantitativo': preco_unitario,
-                'preco_quantitativo_promocional': preco_unitario_promocional,
-                'quantidade': 1,
-                'slug': slug,
-                'imagem': imagem,
+            self.contexto = {
+                'userform': forms.UserForm(
+                    data=self.request.POST or None
+                ),
+                'perfilform': forms.PerfilForm(
+                    data=self.request.POST or None
+                )
             }
 
+        self.userform = self.contexto['userform']
+        self.perfilform = self.contexto['perfilform']
+
+        if self.request.user.is_authenticated:
+            self.template_name = 'perfil/atualizar.html'
+
+        self.renderizar = render(
+            self.request, self.template_name, self.contexto)
+
+    def get(self, *args, **kwargs):
+        return self.renderizar
+
+
+class Criar(BasePerfil):
+    def post(self, *args, **kwargs):
+        if not self.userform.is_valid() or not self.perfilform.is_valid():
+            messages.error(
+                self.request,
+                'Existem erros no formulário de cadastro. Verifique se todos '
+                'os campos foram preenchidos corretamente.'
+            )
+
+            return self.renderizar
+
+        username = self.userform.cleaned_data.get('username')
+        password = self.userform.cleaned_data.get('password')
+        email = self.userform.cleaned_data.get('email')
+        first_name = self.userform.cleaned_data.get('first_name')
+        last_name = self.userform.cleaned_data.get('last_name')
+
+        # Usuário logado
+        if self.request.user.is_authenticated:
+            usuario = get_object_or_404(
+                User, username=self.request.user.username)
+
+            usuario.username = username
+
+            if password:
+                usuario.set_password(password)
+
+            usuario.email = email
+            usuario.first_name = first_name
+            usuario.last_name = last_name
+            usuario.save()
+
+            if not self.perfil:
+                self.perfilform.cleaned_data['usuario'] = usuario
+                print(self.perfilform.cleaned_data)
+                perfil = models.Perfil(**self.perfilform.cleaned_data)
+                perfil.save()
+            else:
+                perfil = self.perfilform.save(commit=False)
+                perfil.usuario = usuario
+                perfil.save()
+
+        # Usário não logado (novo)
+        else:
+            usuario = self.userform.save(commit=False)
+            usuario.set_password(password)
+            usuario.save()
+
+            perfil = self.perfilform.save(commit=False)
+            perfil.usuario = usuario
+            perfil.save()
+
+        if password:
+            autentica = authenticate(
+                self.request,
+                username=usuario,
+                password=password
+            )
+
+            if autentica:
+                login(self.request, user=usuario)
+
+        self.request.session['carrinho'] = self.carrinho
         self.request.session.save()
 
         messages.success(
             self.request,
-            f'Produto {produto_nome} {variacao_nome} adicionado ao seu '
-            f'carrinho {carrinho[variacao_id]["quantidade"]}x.'
+            'Seu cadastro foi criado ou atualizado com sucesso.'
         )
-
-        return redirect(http_referer)
-
-
-class RemoverDoCarrinho(View):
-    def get(self, *args, **kwargs):
-        http_referer = self.request.META.get(
-            'HTTP_REFERER',
-            reverse('produto:lista')
-        )
-        variacao_id = self.request.GET.get('vid')
-
-        if not variacao_id:
-            return redirect(http_referer)
-
-        if not self.request.session.get('carrinho'):
-            return redirect(http_referer)
-
-        if variacao_id not in self.request.session['carrinho']:
-            return redirect(http_referer)
-
-        carrinho = self.request.session['carrinho'][variacao_id]
 
         messages.success(
             self.request,
-            f'Produto {carrinho["produto_nome"]} {carrinho["variacao_nome"]} '
-            f'removido do seu carrinho.'
+            'Você fez login e pode concluir sua compra.'
         )
 
-        del self.request.session['carrinho'][variacao_id]
+        return redirect('produto:carrinho')
+        return self.renderizar
+
+
+class Atualizar(View):
+    def get(self, *args, **kwargs):
+        return HttpResponse('Atualizar')
+
+
+class Login(View):
+    def post(self, *args, **kwargs):
+        username = self.request.POST.get('username')
+        password = self.request.POST.get('password')
+
+        if not username or not password:
+            messages.error(
+                self.request,
+                'Usuário ou senha inválidos.'
+            )
+            return redirect('perfil:criar')
+
+        usuario = authenticate(
+            self.request, username=username, password=password)
+
+        if not usuario:
+            messages.error(
+                self.request,
+                'Usuário ou senha inválidos.'
+            )
+            return redirect('perfil:criar')
+
+        login(self.request, user=usuario)
+
+        messages.success(
+            self.request,
+            'Você fez login no sistema e pode concluir sua compra.'
+        )
+        return redirect('produto:carrinho')
+
+
+class Logout(View):
+    def get(self, *args, **kwargs):
+        carrinho = copy.deepcopy(self.request.session.get('carrinho'))
+
+        logout(self.request)
+
+        self.request.session['carrinho'] = carrinho
         self.request.session.save()
-        return redirect(http_referer)
 
-
-class Carrinho(View):
-    def get(self, *args, **kwargs):
-        contexto = {
-            'carrinho': self.request.session.get('carrinho', {})
-        }
-
-        return render(self.request, 'produto/carrinho.html', contexto)
-
-
-class ResumoDaCompra(View):
-    def get(self, *args, **kwargs):
-        if not self.request.user.is_authenticated:
-            return redirect('perfil:criar')
-
-        perfil = Perfil.objects.filter(usuario=self.request.user).exists()
-
-        if not perfil:
-            messages.error(
-                self.request,
-                'Usuário sem perfil.'
-            )
-            return redirect('perfil:criar')
-
-        if not self.request.session.get('carrinho'):
-            messages.error(
-                self.request,
-                'Carrinho vazio.'
-            )
-            return redirect('produto:lista')
-
-        contexto = {
-            'usuario': self.request.user,
-            'carrinho': self.request.session['carrinho'],
-        }
-
-        return render(self.request, 'produto/resumodacompra.html', contexto)
+        return redirect('produto:lista')

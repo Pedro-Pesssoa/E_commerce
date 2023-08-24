@@ -86,7 +86,7 @@ class Variacao(models.Model):
 
 class AvaliacaoProduto(models.Model):
     produto = models.ForeignKey(Produto, on_delete=models.CASCADE)
-    user = models.OneToOneField(User, on_delete=models.CASCADE)
+    # user = models.OneToOneField(User, on_delete=models.CASCADE)
     nota = models.FloatField()
     comentario =models.CharField( max_length=255)
 
